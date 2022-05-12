@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/background.png</file>
+        <file>qml/Dial.qml</file>
+        <file>qml/needle_shadow.png</file>
+        <file>qml/needle.png</file>
+        <file>qml/overlay.png</file>
+        <file>Bar.qml</file>
+    </qresource>
+</RCC>

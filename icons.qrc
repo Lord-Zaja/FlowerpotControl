@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/lora_connect.png</file>
+        <file>icons/monitor.png</file>
+        <file>icons/wrench.png</file>
+        <file>icons/pot.png</file>
+    </qresource>
+</RCC>
