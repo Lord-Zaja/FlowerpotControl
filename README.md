@@ -1,0 +1,2 @@
+# FlowerpotControl
+Ovládání květináče
