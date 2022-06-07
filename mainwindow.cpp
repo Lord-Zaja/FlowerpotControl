@@ -25,34 +25,144 @@
 #include <QLineEdit>
 #include <QStatusBar>
 #include <QMenuBar>
+#include <QSerialPort>
+#include <QSerialPortInfo>
+#include <QMessageBox>
 
 #include "chart.h"
 #include "configpot.h"
 #include "mqtt_client.h"
 #include <mosquittopp.h>
+#include "confserial.h"
 
-#define PUBLISH_TOPIC "v3/flowerpot-arduino@ttn/devices/eui-e0080e1010101010/down/push"
+#define PUBLISH_TOPIC "v3/flowerpot-arduino@ttn/devices/eui-e0080e1010101010/down/replace"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       keepTemp(false),
       setTemp(20),
       setHum(50),
-      mode(2)
+      mode(2),
+      baudRate(9600),
+      portName("ttyUSB0"),
+      serialConnected(false),
+      configSent(true)
 {
+    //testSerial();
+
     setupForm();
     setupTabs();
     setupActions();
     setupMQTT();
+    setupSerial();
 
 
     //Testovací náhodná data pro loru
     distribution = std::normal_distribution<double>(5.0,5.0);
     timerTest = new QTimer;
-    timerTest->setInterval(5000);
+    timerTest->setInterval(20000);
     connect(timerTest, SIGNAL(timeout()), this, SLOT(test()));
+    timerTest->start();
 
 }
+
+void MainWindow::readData(){
+    const QByteArray data = serial->readAll();
+    if(data.isEmpty())return;
+    RXBuffer += QString::fromStdString(data.toStdString());
+    int idx = RXBuffer.indexOf("\n\r");
+    if(idx < 0)return;
+    RXLines.append(RXBuffer.split("\n\r"));
+    RXBuffer = "";
+    while(RXLines.size() > 8){
+        RXLines.pop_front();
+    }
+    qDebug()<<RXLines;
+    qDebug()<<"";
+/*
+    if(idx < 0){//pořád čekám na enter
+        return;
+    }*/
+    // už mám řádek, vezmu řádek bez enteru
+    /*
+    qDebug()<<"Buffer: "<<RXBuffer;
+    RXLine = RXBuffer.left(idx);
+    qDebug()<<"Line: "<<RXLine<<"\n";
+    RXBuffer = "";*/
+}
+
+void MainWindow::setupSerial(){
+    serial = new QSerialPort();
+    serial->setBaudRate(baudRate);
+    serial->setPortName(portName);
+    serial->setDataBits(QSerialPort::Data8);
+    serial->setStopBits(QSerialPort::OneStop);
+    serial->setParity(QSerialPort::NoParity);
+    serial->setFlowControl(QSerialPort::NoFlowControl);
+
+    connect(serial,&QSerialPort::readyRead,this,&MainWindow::readData);
+
+    if(!serial->open(QIODevice::ReadWrite)){
+        QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("not opened!              \n")+
+                              QVariant::fromValue(serial->error()).toString()+"\n"+
+                              serial->errorString());  // what fucked up
+        return;
+    }
+
+    // Reconnection timer
+    timerSerialReconnection = new QTimer;
+    timerSerialReconnection->setInterval(10000);
+    connect(timerSerialReconnection, SIGNAL(timeout()), this, SLOT(serialReconnect()));
+
+    serialConnected = true;
+    //serialReconnect();
+
+    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected");
+
+    //timerSerialReconnection->start();
+}
+
+void MainWindow::serialReconnect(){
+    qDebug()<<"Serial reconnection..";
+    QString strTime;// musím doplnit nuly
+    //den
+    strTime = QString::number(QDateTime::currentDateTime().date().day()).rightJustified(2,'0');
+    //měsíc
+    strTime += QString::number(QDateTime::currentDateTime().date().month()).rightJustified(2,'0');
+    //rok
+    strTime += QString::number(QDateTime::currentDateTime().date().year()).right(2);
+    //hodina
+    strTime += QString::number(QDateTime::currentDateTime().time().hour()).rightJustified(2,'0');
+    //minuta
+    strTime += QString::number(QDateTime::currentDateTime().time().minute()).rightJustified(2,'0');
+    //sekunda
+    strTime += QString::number(QDateTime::currentDateTime().time().second()).rightJustified(2,'0');
+    strTime += "\n\r";
+    if(!sendData(strTime,"Time received!",true)){
+        // možná už je zapnutý?
+        if(!sendData("getconnection\n\r","connected",true)){
+            // čas není nastaven a květináč neodpovídá
+            if(serialConnected)this->statusBar()->showMessage(tr("Disconnected!"),5000);
+            serialConnected = false;
+        }else{
+            if(!serialConnected)this->statusBar()->showMessage(tr("Connected!"),5000);
+            serialConnected = true;
+            //timerSerialReconnection->stop();
+        }
+    }else{
+        if(!serialConnected)this->statusBar()->showMessage(tr("Connected, time set!"),5000);
+        serialConnected = true;
+        //timerSerialReconnection->stop();
+    }
+
+    // zjisti nastavení v květináči, porovnej s nastavením tady a případně ho přepiš
+    QList<float> configValues;
+    getPacket("getconfig\n\r", &configValues);
+    qDebug()<<configValues;
+
+    updateToolbar();
+}
+
 
 void MainWindow::setupForm(){
     this->setWindowTitle(tr("Flowerpot Control"));
@@ -61,17 +171,36 @@ void MainWindow::setupForm(){
     this->resize(800,600);
     // Toolbar
     bar = new QToolBar;
-    static const int SIZE = 20;
-    static const QString greenSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:1, y2:1, stop:0 rgba(20, 252, 7, 255), stop:1 rgba(25, 134, 5, 255));").arg(SIZE/2);
-    static const QString redSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:0.92, y2:0.988636, stop:0 rgba(255, 12, 12, 255), stop:0.869347 rgba(103, 0, 0, 255));").arg(SIZE/2);
-    static const QString orangeSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.232, y1:0.272, x2:0.98, y2:0.959773, stop:0 rgba(255, 113, 4, 255), stop:1 rgba(91, 41, 7, 255))").arg(SIZE/2);
-    static const QString blueSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.04, y1:0.0565909, x2:0.799, y2:0.795, stop:0 rgba(203, 220, 255, 255), stop:0.41206 rgba(0, 115, 255, 255), stop:1 rgba(0, 49, 109, 255));").arg(SIZE/2);
     //this->addToolBar(bar);
+    SIZE = 30;
+    greenSS = QString("color: black;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:1, y2:1, stop:0 rgba(20, 252, 7, 255), stop:1 rgba(25, 134, 5, 255));").arg(SIZE/2);
+    redSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:0.92, y2:0.988636, stop:0 rgba(255, 12, 12, 255), stop:0.869347 rgba(103, 0, 0, 255));").arg(SIZE/2);
+    orangeSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.232, y1:0.272, x2:0.98, y2:0.959773, stop:0 rgba(255, 113, 4, 255), stop:1 rgba(91, 41, 7, 255))").arg(SIZE/2);
+    blueSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.04, y1:0.0565909, x2:0.799, y2:0.795, stop:0 rgba(203, 220, 255, 255), stop:0.41206 rgba(0, 115, 255, 255), stop:1 rgba(0, 49, 109, 255));").arg(SIZE/2);
 
-    led = new QLabel("   ");
-    led->setStyleSheet(redSS);
+    ledConnection = new QLabel(tr("Disconnected"));
+    ledConnection->setStyleSheet(redSS);
 
-    bar->addWidget(led);
+    ledZalevam = new QLabel(tr(""));
+    ledZalevam->setStyleSheet(blueSS);
+
+    bar->addWidget(ledConnection);
+    bar->addWidget(ledZalevam);
+
+    this->addToolBar(bar);
+}
+
+void MainWindow::updateToolbar(){
+    if(serialConnected){
+        ledConnection->setText(tr("Connected"));
+        ledConnection->setStyleSheet(greenSS);
+    }else{
+        ledConnection = new QLabel(tr("Disconnected"));
+        ledConnection->setStyleSheet(redSS);
+    }
+    if(zalevam){
+
+    }
 }
 
 void MainWindow::setupActions(){
@@ -86,6 +215,11 @@ void MainWindow::setupActions(){
     QIcon iconConfig = QIcon::fromTheme("document-properties",QIcon(":/icons/wrench.png"));
     actPotConf->setIcon(iconConfig);
     mnuConf->addAction(actPotConf);
+
+    actSerConf = new QAction(tr("&Serial port config"));
+    this->menuBar()->addMenu(mnuConf);
+    actSerConf->setIcon(iconConfig);
+    mnuConf->addAction(actSerConf);
 
     //Tabs
     wTabs = new QTabWidget;
@@ -135,6 +269,8 @@ void MainWindow::setupActions(){
 */
 
     connect(actPotConf,SIGNAL(triggered()),this,SLOT(confPot()));
+    connect(actSerConf,SIGNAL(triggered()),this,SLOT(confSer()));
+
     printSetValues();
 
     this->show();
@@ -932,68 +1068,74 @@ void MainWindow::setupTabs(){
 }
 
 void MainWindow::tempDivChanged(){
-    if(editTempDiv->text().toInt() > 0){
-        chartTemp->setXRange(editTempDiv->text().toInt());
-       //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editTempDiv->text().toInt()),2000);
-    }else{
-        chartTemp->setXRange(1);
-        editTempDiv->setText("1");
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editTempDiv->text().isEmpty()){
+        qreal number = editTempDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartTemp->setXRange(number);
+        }else{
+            chartTemp->setXRange(1);
+        }
     }
 }
 
 void MainWindow::humDivChanged(){
-    if(editHumDiv->text().toInt() > 0){
-        chartHum->setXRange(editHumDiv->text().toInt());
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editHumDiv->text().toInt()),2000);
-    }else{
-        chartHum->setXRange(1);
-        editHumDiv->setText("1");
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editHumDiv->text().isEmpty()){
+        qreal number = editHumDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartHum->setXRange(number);
+        }else{
+            chartHum->setXRange(1);
+        }
     }
 }
 
 void MainWindow::lightDivChanged(){
-    if(editLightDiv->text().toInt() > 0){
-        chartLight->setXRange(editLightDiv->text().toInt());
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editLightDiv->text().toInt()),2000);
-    }else{
-        chartLight->setXRange(1);
-        editLightDiv->setText("1");
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editLightDiv->text().isEmpty()){
+        qreal number = editLightDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartLight->setXRange(number);
+        }else{
+            chartLight->setXRange(1);
+        }
     }
 }
 
 void MainWindow::soilDivChanged(){
-    if(editSoilDiv->text().toInt() > 0){
-        chartSoil->setXRange(editSoilDiv->text().toInt());
-       // this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editSoilDiv->text().toInt()),2000);
-    }else{
-        chartSoil->setXRange(1);
-        editSoilDiv->setText("1");
-       // this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editSoilDiv->text().isEmpty()){
+        qreal number = editSoilDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartSoil->setXRange(number);
+        }else{
+            chartSoil->setXRange(1);
+        }
     }
 }
 
 void MainWindow::cupDivChanged(){
-    if(editCupDiv->text().toInt() > 0){
-        chartCup->setXRange(editCupDiv->text().toInt());
-       // this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editCupDiv->text().toInt()),2000);
-    }else{
-        chartCup->setXRange(1);
-        editCupDiv->setText("1");
-      //  this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editCupDiv->text().isEmpty()){
+        qreal number = editCupDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartCup->setXRange(number);
+        }else{
+            chartCup->setXRange(1);
+        }
     }
 }
 
 void MainWindow::rezDivChanged(){
-    if(editRezDiv->text().toInt() > 0){
-        chartRez->setXRange(editRezDiv->text().toInt());
-       // this->statusBar()->showMessage(tr("Div changed to ")+QString::number(editRezDiv->text().toInt()),2000);
-    }else{
-        chartRez->setXRange(1);
-        editRezDiv->setText("1");
-        //this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
+    bool ok;
+    if(!editRezDiv->text().isEmpty()){
+        qreal number = editRezDiv->text().toDouble(&ok);
+        if(number > 0.0 && ok == true){
+            chartRez->setXRange(number);
+        }else{
+            chartRez->setXRange(1);
+        }
     }
 }
 
@@ -1003,10 +1145,8 @@ void MainWindow::testDivChanged(){
         qreal number = editTestDiv->text().toDouble(&ok);
         if(number > 0.0 && ok == true){
             chartTest->setXRange(number);
-            this->statusBar()->showMessage(tr("Div changed to ")+QString::number(number),2000);
         }else{
             chartTest->setXRange(1);
-            this->statusBar()->showMessage(tr("Div changed to ")+QString::number(1),2000);
         }
     }
 }
@@ -1017,6 +1157,7 @@ void MainWindow::confPot(){
     myConfig->setHum(setHum);
     myConfig->setTemp(setTemp);
     myConfig->setKeepTemp(keepTemp);
+    if(!keepTemp)setTemp = 0;
     myConfig->exec();
     if(myConfig->saved){
         if(myConfig->getKeepTemp() == 1){
@@ -1027,11 +1168,158 @@ void MainWindow::confPot(){
         setTemp = myConfig->getTemp();
         mode = myConfig->getMode();
         setHum = myConfig->getHum();
+        configSent = false;
+        printSetValues();
+        iot_client->sendData((uint8_t) mode, (uint8_t) setTemp,(uint8_t)setHum);
     }
-    printSetValues();
-    iot_client->sendData((uint8_t) mode, (uint8_t) setTemp,(uint8_t)setHum);
 }
 
+void MainWindow::confSer(){
+    confSerial *myConfig = new confSerial;
+    if(baudRate > 0){
+        myConfig->setBaudRate(baudRate);
+        myConfig->setPort(portName);
+    }
+    myConfig->exec();
+    if(myConfig->saved){
+        baudRate = myConfig->getBaudRate();
+        portName = myConfig->getPort();
+        serial->setBaudRate(baudRate);
+        serial->setPortName(portName);
+        this->statusBar()->showMessage(tr("Configuration was saved."),5000);
+    }
+}
+
+bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
+    auto findIt = [](auto RXLines, auto n){
+        if(RXLines.size() == 0)return -1;
+        for(int idx = RXLines.size()-1;idx >= RXLines.size() - n; idx--){
+            int left = RXLines[idx].indexOf("{");
+            int right = RXLines[idx].indexOf("}");
+            if(left > 0 && right > 0){// obě závorky ve zprávě leží
+                if(left < right){// levá závorka je nalevo od pravé
+                    // našel jsem paket .. ukládám
+                    return idx;
+                }
+            }
+        }
+        return -1;
+    };
+    QTimer time;
+    time.setInterval(1500);// timeout for dack
+    time.setSingleShot(true);
+
+    serial->write(cmd.toLocal8Bit());
+    serial->waitForBytesWritten(50*cmd.size());     // wait for data to be sent
+    if(serial->error() != QSerialPort::NoError){    // something fucked up
+        if(!silent){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Write action failed!                 \n")+
+                                  QVariant::fromValue(serial->error()).toString()+"\n"+
+                                  serial->errorString());  // what fucked up
+        }
+       return false;
+    }
+    // wait for dack message to be received
+    serial->waitForReadyRead(50);
+    int n =  2;// prohledávám dva poslední prvky
+    int idx = findIt(RXLines,n);
+    qDebug()<<idx;
+    if(idx < 0){
+        time.start();
+        while(time.remainingTime() > 0){
+            QCoreApplication::processEvents();
+            readData();
+            idx = findIt(RXLines,n);
+            if(idx >= 0)break;
+        }
+        if(idx < 0){
+            if(!silent){
+                QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by Flowerpot! (timeout)"));  // what fucked up
+            }
+            return false;
+        }
+
+    }
+    // tady už mám index paketu
+    // musím z něho vytáhnout data a uložit do values
+    std::string packet = RXLines[idx].toStdString();
+    idx = packet.find(";");// předpokládám, že paket obsahuje vždy alespoň jeden středník .. alespoň dvě čísla
+    values->append(QString::fromStdString(packet.substr(1,idx-1)).toFloat());
+    int idx2 = packet.find(";",idx + 1);
+    while(idx2 != std::string::npos){// dokud nallézám středníky, tak iteruj
+        values->append(QString::fromStdString(packet.substr(idx+1,idx2-1)).toFloat());
+        idx = idx2;
+        idx2 = packet.find(";",idx + 1);
+    }
+    return true;
+}
+
+/* \brief Ftunction to write data to serial port.
+ * @param string of data
+ * @return true if data were sent corrently, else false
+ */
+bool MainWindow::sendData(QString str, QString dack,bool silent){
+    //serial->setReadBufferSize(128);
+    QTimer time;
+    // Reconnection timer
+    time.setInterval(2500);// timeout for dack
+    time.setSingleShot(true);
+    //const char *c = ba.data();
+
+    serial->write(str.toLocal8Bit());
+    serial->waitForBytesWritten(50*str.size());     // wait for data to be sent
+    if(serial->error() != QSerialPort::NoError){    // something fucked up
+        if(!silent){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Write action failed!                 \n")+
+                                  QVariant::fromValue(serial->error()).toString()+"\n"+
+                                  serial->errorString());  // what fucked up
+        }
+       return false;
+    }
+    // wait for dack message to be received
+    serial->waitForReadyRead(50);
+    if(RXLines.size() - RXLines.lastIndexOf(dack) <= 2 ){
+        //prvek je na 2. pořadí od konce nebo méně
+        return true;
+    }else{
+        time.start();
+        while(time.remainingTime() > 0){
+            QCoreApplication::processEvents();
+            readData();
+            // check jestli na posledních několika zprávách není hledaná dack
+            if(RXLines.size() - RXLines.lastIndexOf(dack) <= 2 ){
+                //prvek je na 2. pořadí od konce nebo méně
+                return true;
+            }
+        }
+    }
+    if(!silent){
+        QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by Flowerpot! (timeout)"));  // what fucked up
+    }
+    return false;
+
+
+/*
+    if(!serial->waitForReadyRead(2000)){
+        // timeout
+        QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by display! (timeout)"));  // what fucked up
+        return true; // data were still sent
+    }
+    qDebug()<<"Bytes wainting: " << serial->bytesAvailable();
+    QString rx;
+    while(!serial->atEnd()){
+        QByteArray data = serial->read(128);
+        rx += QString::fromStdString(data.toStdString());
+    }
+    //QByteArray ba = serial->readLine(128);
+    //rx = QString::fromStdString(ba.toStdString());
+    qDebug()<<rx;
+    if(rx != dack){
+        // not received dack signal
+        QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by display! (dack not received)"));  // what fucked up
+        return true; // data were still sent
+    }*/
+}
 
 void MainWindow::setupMQTT(){
     int rc;
@@ -1074,7 +1362,6 @@ void MainWindow::loraConnected(){
     }
     char topic[] = "#";
     iot_client->subscribe(NULL, topic);
-    timerTest->start();
 }
 
 /*
@@ -1082,7 +1369,8 @@ void MainWindow::loraConnected(){
  * data: {t,h,light,soil,cup,rez};
  */
 void MainWindow::loraReceivedData(QList<int> data){
-    this->statusBar()->showMessage(tr("Received data from device!"),2);
+    qDebug()<<"Data printed!!";
+    this->statusBar()->showMessage(tr("Received data from device!"),2000);
     printStats(data[0],data[1],data[2],data[3],data[4],data[5]);
     printTemp(data[0]);
     printHum(data[1]);
@@ -1099,6 +1387,7 @@ void MainWindow::loraReceivedData(QList<int> data){
           (data[8] != (uint8_t)setHum)){
             this->statusBar()->showMessage(tr("Overwriting the data inside device!"),2);
             iot_client->sendData((uint8_t) mode, (uint8_t) setTemp,(uint8_t)setHum);
+            qDebug()<<"Set data sent!";
         }
     }
     /*    bool keepTemp;
@@ -1112,14 +1401,22 @@ void MainWindow::loraReceivedData(QList<int> data){
 void MainWindow::test(){
     qreal data = distribution(this->generator);
     uint16_t c = std::round(data);
+    uint8_t test = 5;
     char TXBuffer[64];
-    *((uint16_t *)TXBuffer) = c;
-    qDebug()<<iot_client->publish(NULL,PUBLISH_TOPIC,2,TXBuffer);
-    iot_client->sendNumber(1500);
-    //qDebug()<<MOSQ_ERR_SUCCESS;
-    qDebug()<<"Manudal data sent";
-    printTest(data);
+    //*((uint16_t *)TXBuffer) = c;
+    TXBuffer[0] = test;
+    /*
+    char payload[] = "{\"downlinks\":[{\"f_port\": 15,\"frm_payload\":\"5\",\"priority\": \"NORMAL\"}]}";
+    std::string payload_str = "{\"downlinks\":[{\"f_port\": 15,\"meh_payload\":\"vu8=\",\"priority\": \"NORMAL\"}]}";
+    memset(TXBuffer, 0, payload_str.size() * sizeof(char));
+    std::snprintf(TXBuffer, payload_str.size(), "%s", payload);*/
 
+    //qDebug()<<"Data publish: "<<iot_client->publish(NULL,PUBLISH_TOPIC,1,TXBuffer);
+
+    //iot_client->sendNumber(1500);
+    //qDebug()<<MOSQ_ERR_SUCCESS;
+    //qDebug()<<"Sent test data: "<<TXBuffer[0];
+    printTest(data);
 }
 
 void MainWindow::printTemp(qreal value){
@@ -1128,10 +1425,6 @@ void MainWindow::printTemp(qreal value){
     time += QDateTime::currentDateTime().time().minute()/60.0;
     time += QDateTime::currentDateTime().time().second()/3600.0;
     chartTemp->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString("Current time [hours]: ")+QString::number(time);
-    qDebug()<<QString("Current temperature [°C]: ")+QString::number(value);
-#endif
 }
 
 void MainWindow::printHum(qreal value){
@@ -1144,11 +1437,6 @@ void MainWindow::printHum(qreal value){
     //time = QDateTime::currentDateTime().time().second()/10.0;//zobrazuji desítky sekund
     //time = time /5;//zobarzuji pět minut
     chartHum->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString().asprintf("Current time [hours]: %0.2f", time);
-    qDebug()<<QString().asprintf("Current humidity [%]: %0.2f", value);
-    qDebug()<<" ";
-#endif
 }
 
 void MainWindow::printLight(qreal value){
@@ -1157,10 +1445,6 @@ void MainWindow::printLight(qreal value){
     time += QDateTime::currentDateTime().time().minute()/60.0;
     time += QDateTime::currentDateTime().time().second()/3600.0;
     chartLight->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString("Current time [hours]: ")+QString::number(time);
-    qDebug()<<QString("Current light [%]: ")+QString::number(value);
-#endif
 }
 
 void MainWindow::printSoil(qreal value){
@@ -1169,10 +1453,6 @@ void MainWindow::printSoil(qreal value){
     time += QDateTime::currentDateTime().time().minute()/60.0;
     time += QDateTime::currentDateTime().time().second()/3600.0;
     chartSoil->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString("Current time [hours]: ")+QString::number(time);
-    qDebug()<<QString("Current soil humidity [%]: ")+QString::number(value);
-#endif
 }
 
 void MainWindow::printCup(qreal value){
@@ -1181,10 +1461,6 @@ void MainWindow::printCup(qreal value){
     time += QDateTime::currentDateTime().time().minute()/60.0;
     time += QDateTime::currentDateTime().time().second()/3600.0;
     chartCup->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString("Current time [hours]: ")+QString::number(time);
-    qDebug()<<QString("Current Cup humidity [%]: ")+QString::number(value);
-#endif
 }
 
 void MainWindow::printRez(qreal value){
@@ -1193,10 +1469,6 @@ void MainWindow::printRez(qreal value){
     time += QDateTime::currentDateTime().time().minute()/60.0;
     time += QDateTime::currentDateTime().time().second()/3600.0;
     chartRez->addPoint(time,value);
-#ifdef QT_DEBUG
-    qDebug()<<QString("Current time [hours]: ")+QString::number(time);
-    qDebug()<<QString("Current Rez humidity [%]: ")+QString::number(value);
-#endif
 }
 
 void MainWindow::printTest(qreal value){
@@ -1218,12 +1490,15 @@ void MainWindow::printStats(qreal temp, qreal hum, qreal light, qreal soil, qrea
     lblStatsHumValue->setText(QString::number(hum)+="%");
     viewDialLight->rootObject()->setProperty("value",light);
     lblStatsLightValue->setText(QString::number(light)+="%");
-    viewDialLight->rootObject()->setProperty("value",soil);
-    lblStatsLightValue->setText(QString::number(soil)+="%");
-    viewDialLight->rootObject()->setProperty("value",cup);
-    lblStatsLightValue->setText(QString::number(cup)+="%");
-    viewDialLight->rootObject()->setProperty("value",rez);
-    lblStatsLightValue->setText(QString::number(rez)+="%");
+    viewDialSoil->rootObject()->setProperty("value",soil);
+    lblStatsSoilValue->setText(QString::number(soil)+="%");
+
+    /*
+    viewDialCup->rootObject()->setProperty("value",cup);
+    lblStatsCupValue->setText(QString::number(cup)+="%");
+    viewDialRez->rootObject()->setProperty("value",rez);
+    lblStatsRezValue->setText(QString::number(rez)+="%");
+    */
     progStatsWatterCup->setValue(std::round(cup));
     lblStatsWatterCupValue->setText(QString::number(rez)+="%");
     progStatsWatterRez->setValue(std::round(rez));

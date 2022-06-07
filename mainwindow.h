@@ -24,6 +24,7 @@ class QTabWidget;
 class QProgressBar;
 class QFrame;
 class QLineEdit;
+class QSerialPort;
 
 class MainWindow : public QMainWindow
 {
@@ -254,6 +255,7 @@ class MainWindow : public QMainWindow
     // Menu
     QMenu *mnuConf;
     QAction *actPotConf;
+    QAction *actSerConf;
     QAction *actLoraConf;
     QAction *actLoraConnect;
 
@@ -262,13 +264,38 @@ class MainWindow : public QMainWindow
     qreal setTemp;
     qreal setHum;
     int mode;
+    bool zalevam;
+    bool ohrivam;
+
+    //Serial port
+    QString RXBuffer;
+    QStringList RXLines;
+    QSerialPort *serial;
+    bool serialConnected;
+    void setupSerial();
+    int baudRate;
+    QString portName;
+    bool sendData(QString str, QString dack, bool silent = false);
+    bool getPacket(QString cmd, QList<float> *values, bool silent = true);
+    QTimer *timerSerialReconnection;
+    bool configSent;
 
     // Tabs
     QTabWidget *wTabs;
 
     // Toolbar
+    void updateToolbar();
     QToolBar *bar;
     QLabel *led;
+    QLabel *ledConnection;
+    QLabel *ledZalevam;
+    QLabel *ledOhrivam;
+    int SIZE;
+    QString blueSS;
+    QString orangeSS;
+    QString redSS;
+    QString greenSS;
+
 
     QAction *actSerialConf;
     QAction *actSerialConnect;
@@ -304,6 +331,10 @@ public:
 
 public slots:
     void confPot();
+    void confSer();
+    //serial port
+    void serialReconnect();
+    void readData();
 
     // LoRa things
     void loraDisconnected();
@@ -320,6 +351,5 @@ public slots:
     void testDivChanged();
 
     void test();
-
 };
 #endif // MAINWINDOW_H

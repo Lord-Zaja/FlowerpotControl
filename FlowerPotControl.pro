@@ -1,4 +1,4 @@
-QT       += core gui quick qml
+QT       += core gui quick qml serialport
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -11,6 +11,7 @@ CONFIG += c++17
 SOURCES += \
     chart.cpp \
     configpot.cpp \
+    confserial.cpp \
     emitor.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -19,6 +20,7 @@ SOURCES += \
 HEADERS += \
     chart.h \
     configpot.h \
+    confserial.h \
     emitor.h \
     mainwindow.h \
     mqtt_client.h \

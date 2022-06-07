@@ -64,12 +64,12 @@ std::string mqtt_client::getMyData(std::string str_buffer){
  */
 int mqtt_client::dataExtract(std::string myData, std::string varName){
     std::string search = "\""+varName+"\":";
-    int start_idx  = myData.find(search)+1+3;
+    int start_idx  = myData.find(search)+3+varName.size();
     int end_idx = myData.find(",",start_idx);
     if(end_idx == std::string::npos){   // na konci dat .. nenašlo čárku za číslem
         end_idx = myData.find("}",start_idx);
     }
-    qDebug()<<QString::fromStdString(myData.substr(start_idx,end_idx-start_idx));
+    //qDebug()<<QString::fromStdString(myData.substr(start_idx,end_idx-start_idx));
     return std::stoi(myData.substr(start_idx,end_idx-start_idx));
 }
 
@@ -91,14 +91,17 @@ int mqtt_client::getTemperature(std::string myData){
  * Get Temperature from our data packet //":{"adc1":781,"adc2":142,"h":32.8,"t":23.9
  */
 int mqtt_client::getLight(std::string myData){
-    return dataExtract(myData,"adc2");
+    return dataExtract(myData,"adc2")*100/1024;
 }
 
 /*
  * Get Temperature from our data packet //":{"adc1":781,"adc2":142,"h":32.8,"t":23.9
  */
 int mqtt_client::getSoil(std::string myData){
-    return dataExtract(myData,"adc1");
+    qreal voltage = dataExtract(myData,"adc1")*100/1024;
+    // 0.4V == 100%
+    // 2V == 0%
+    return voltage;
 }
 
 /*
@@ -152,8 +155,9 @@ void mqtt_client::on_message(const struct mosquitto_message *message)
     // v3/flowerpot-arduino@ttn/devices/eui-e0080e1010101010/up
 
     char buf[payload_size];
+    std::string topic = message->topic;
 
-    if(1)//!strcmp(message->topic, PUBLISH_TOPIC))
+    if(topic.compare("v3/flowerpot-arduino@ttn/devices/eui-e0080e1010101010/up") == 0)//!strcmp(message->topic, PUBLISH_TOPIC))
     {
         memset(buf, 0, payload_size * sizeof(char));
 
@@ -230,5 +234,10 @@ void mqtt_client::on_message(const struct mosquitto_message *message)
                 std::cout << "Request to turn off." << std:: endl;
             #endif
         }*/
+    }else{
+        memset(buf, 0, payload_size * sizeof(char));
+        memcpy(buf, message->payload, message->payloadlen *sizeof(char));//MAX_PAYLOAD * sizeof(char));
+
+        qDebug()<<buf;
     }
 }
