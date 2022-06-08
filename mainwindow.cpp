@@ -34,19 +34,29 @@
 #include "mqtt_client.h"
 #include <mosquittopp.h>
 #include "confserial.h"
+#include "calibrate.h"
 
 #define PUBLISH_TOPIC "v3/flowerpot-arduino@ttn/devices/eui-e0080e1010101010/down/replace"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
+      config_saved(false),
       keepTemp(false),
       setTemp(20),
       setHum(50),
       mode(2),
+      calibrated(false),
+      temperature(0),
+      humidity(0),
+      watter_cup(0),
+      watter_rez(0),
+      soil1(0),
+      soil2(0),
+      serialConnected(false),
       baudRate(9600),
       portName("ttyUSB0"),
-      serialConnected(false),
       configSent(true)
+
 {
     //testSerial();
 
@@ -54,6 +64,9 @@ MainWindow::MainWindow(QWidget *parent)
     setupTabs();
     setupActions();
     setupMQTT();
+    serial = new QSerialPort();
+    timerSerialReconnection = new QTimer;
+    timerSerialReconnection->setInterval(10000);
     setupSerial();
 
 
@@ -70,9 +83,11 @@ void MainWindow::readData(){
     const QByteArray data = serial->readAll();
     if(data.isEmpty())return;
     RXBuffer += QString::fromStdString(data.toStdString());
-    int idx = RXBuffer.indexOf("\n\r");
+    int idx = RXBuffer.indexOf("\n\r",1);
     if(idx < 0)return;
-    RXLines.append(RXBuffer.split("\n\r"));
+    RXLines.append(RXBuffer.split("\n\r",Qt::SkipEmptyParts));
+    qDebug()<<"UART message:";
+    qDebug()<<RXBuffer;
     RXBuffer = "";
     while(RXLines.size() > 8){
         RXLines.pop_front();
@@ -92,7 +107,6 @@ void MainWindow::readData(){
 }
 
 void MainWindow::setupSerial(){
-    serial = new QSerialPort();
     serial->setBaudRate(baudRate);
     serial->setPortName(portName);
     serial->setDataBits(QSerialPort::Data8);
@@ -101,6 +115,8 @@ void MainWindow::setupSerial(){
     serial->setFlowControl(QSerialPort::NoFlowControl);
 
     connect(serial,&QSerialPort::readyRead,this,&MainWindow::readData);
+    // Reconnection timer
+    connect(timerSerialReconnection, SIGNAL(timeout()), this, SLOT(serialReconnect()));
 
     if(!serial->open(QIODevice::ReadWrite)){
         QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("not opened!              \n")+
@@ -109,21 +125,22 @@ void MainWindow::setupSerial(){
         return;
     }
 
-    // Reconnection timer
-    timerSerialReconnection = new QTimer;
-    timerSerialReconnection->setInterval(10000);
-    connect(timerSerialReconnection, SIGNAL(timeout()), this, SLOT(serialReconnect()));
+
 
     serialConnected = true;
-    //serialReconnect();
+    serialReconnect();
 
-    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected");
-
-    //timerSerialReconnection->start();
+    /*
+    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
+    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
+    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
+    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);*/
+    timerSerialReconnection->start();
 }
 
 void MainWindow::serialReconnect(){
     qDebug()<<"Serial reconnection..";
+    bool silent = true;
     QString strTime;// musím doplnit nuly
     //den
     strTime = QString::number(QDateTime::currentDateTime().date().day()).rightJustified(2,'0');
@@ -138,11 +155,12 @@ void MainWindow::serialReconnect(){
     //sekunda
     strTime += QString::number(QDateTime::currentDateTime().time().second()).rightJustified(2,'0');
     strTime += "\n\r";
-    if(!sendData(strTime,"Time received!",true)){
+    if(!sendData(strTime,"Time received!",silent)){
         // možná už je zapnutý?
-        if(!sendData("getconnection\n\r","connected",true)){
+        if(!sendData("getconnection\n\r","connected",silent)){
             // čas není nastaven a květináč neodpovídá
             if(serialConnected)this->statusBar()->showMessage(tr("Disconnected!"),5000);
+            qDebug()<<"Disconnected";
             serialConnected = false;
         }else{
             if(!serialConnected)this->statusBar()->showMessage(tr("Connected!"),5000);
@@ -154,12 +172,184 @@ void MainWindow::serialReconnect(){
         serialConnected = true;
         //timerSerialReconnection->stop();
     }
+    if(!serialConnected){
+        updateToolbar();
+        return;
+    }
 
+    QString message;
     // zjisti nastavení v květináči, porovnej s nastavením tady a případně ho přepiš
     QList<float> configValues;
-    getPacket("getconfig\n\r", &configValues);
-    qDebug()<<configValues;
+    if(!getPacket("getconfig\n\r", &configValues,silent)){
+        if(!silent){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("Not responding properly!     \n")+
+                                  "(getconfig failed)");  // what fucked up
+        }
+    }else{
+        if(configValues.size() != 3){
+            if(!silent){
+                QMessageBox::critical(this,tr("Serial port error!"),tr("getconfig failed!               \n")+
+                                      "I didnt get my whole packet!"+"(got "+QString::number(configValues.size())+
+                                      " needed 3");  // what fucked up
+            }
 
+        }else{
+            if(mode == (int)configValues[0] &&
+               (int)setTemp == (int)configValues[1] &&
+               (int)setHum == (int)configValues[2]){
+                // všechna nastavení jsou stejná, pak nemusím nic dělat
+            }else if(config_saved){
+                //nějaké nastavení se liší a chci poslat nová nastavení
+                message = "{"+QString::number(mode)+";"+
+                        QString::number(setTemp)+";"+
+                        QString::number(setHum)+"}\n\r";
+                if(!sendData(message,"Packet captured!",silent)){
+                    QMessageBox::critical(this,tr("Serial port error!"),tr("Send config failed!               \n")+
+                                          "I didnt get my dack message!"+"(Packet captured!)");  // what fucked up
+                }
+                printSetValues();
+                config_saved = false;
+            }else{// vykreslím aktuální nastavení v květináči
+                mode = (int)configValues[0];
+                setTemp = (int)configValues[1];
+                setHum = (int)configValues[2];
+                if(setTemp != 0){
+                    keepTemp = true;
+                }else{
+                    keepTemp = false;
+                }
+                printSetValues();
+            }
+        }
+    }
+    // seber všechna data
+    // zjisti nastavení v květináči, porovnej s nastavením tady a případně ho přepiš
+    QList<float> data;
+    if(!getPacket("getdata\n\r", &data,silent)){
+        if(!silent){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("Not responding properly!     \n")+
+                                  "(getdata failed)");  // what fucked up
+        }
+    }else{
+        if(data.size() != 6){
+            if(true){
+                QMessageBox::critical(this,tr("Serial port error!"),tr("getdata failed!               \n")+
+                                  "I didnt get my whole packet!"+"(got "+QString::number(data.size())+
+                                  " needed 6");  // what fucked up
+            }
+        }else{
+            if(abs(data[0]) > 100){
+                temperature = 0;
+            }else{
+                temperature = data[0];
+            }
+            if(data[1] < 0 || data[1] > 100){
+                humidity = 0;
+            }else{
+                humidity = data[1];
+            }
+            switch((int)data[2]){
+            case 0:
+                watter_cup = 0;
+                break;
+            case 1:
+                watter_cup = 50;
+                break;
+            case 2:
+                watter_cup = 100;
+                break;
+            default:
+                if(!silent){
+                    QMessageBox::critical(this,tr("Serial port error!"),tr("getdata failed!               \n")+
+                                      "watter_cup has wrong value!"+"(got "+QString::number((int)data[2])+
+                                      " and needed in {0,1,2}");  // what fucked up
+                }
+            }
+            switch((int)data[3]){
+            case 0:
+                watter_rez = 0;
+                break;
+            case 1:
+                watter_rez = 50;
+                break;
+            case 2:
+                watter_rez = 100;
+                break;
+            default:
+                if(!silent){
+                    QMessageBox::critical(this,tr("Serial port error!"),tr("getdata failed!               \n")+
+                                      "watter_rez has wrong value!"+"(got "+QString::number((int)data[2])+
+                                      " and needed in {0,1,2}");  // what fucked up
+                }
+            }
+            if(abs(data[4]) > 200){
+                soil1 = 0;
+            }else{
+                soil1 = data[4];
+            }
+            if(abs(data[5]) > 200){
+                soil2 = 0;
+            }else{
+                soil2 = data[5];
+            }
+            // aktualizuj zobrazované hodnoty
+            this->statusBar()->showMessage(tr("Data received."),1000);
+            qDebug()<<"Data printed!!";
+            qreal light = soil2;
+            printStats(temperature,humidity,light,soil1,watter_cup,watter_rez);
+            printTemp(temperature);
+            printHum(humidity);
+            printLight(light);
+            printSoil(soil1);
+            printCup(watter_cup);
+            printRez(watter_rez);
+        }
+    }
+
+    //getstatus
+    // zjisti, co zrovna květináč provádí
+    QList<float> statusValues;
+    if(!getPacket("getstatus\n\r", &statusValues,silent)){
+        if(!silent){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("Not responding properly!     \n")+
+                                  "(getstatus failed)");  // what fucked up
+            qDebug()<<"getstatu failed 1";
+        }
+    }else{
+        if(statusValues.size() != 2){
+            if(!silent){
+                QMessageBox::critical(this,tr("Serial port error!"),tr("getstatus failed!               \n")+
+                                      "I didnt get my whole packet!"+"(got "+QString::number(configValues.size())+
+                                      " needed 2");  // what fucked up
+                qDebug()<<"getstatu failed 2";
+            }
+
+        }else{
+            // vykreslím aktuální nastavení v květináči
+            if((int)statusValues[0] == 0){
+                zalevam = false;
+            }else{
+                zalevam = true;
+            }
+            if((int)statusValues[1] == 0){
+                ohrivam = false;
+            }else{
+                ohrivam = true;
+            }
+        }
+    }
+    // zapiš nové kalibrační hodnoty
+    if(calibrated){
+        message = "{"+QString::number(k0,'e',6)+";"+
+                QString::number(k1,'e',6)+"}\n\r";
+        if(!sendData(message,"Packet captured!",silent)){
+            QMessageBox::critical(this,tr("Serial port error!"),tr("Send calibration failed!               \n")+
+                                  "I didnt get my dack message!"+"(Packet captured!)");  // what fucked up
+        }
+        calibrated = false;
+    }
+    //qDebug()<<configValues;
+    //qDebug()<<serialConnected;
     updateToolbar();
 }
 
@@ -172,20 +362,29 @@ void MainWindow::setupForm(){
     // Toolbar
     bar = new QToolBar;
     //this->addToolBar(bar);
-    SIZE = 30;
+    SIZE = 10;
     greenSS = QString("color: black;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:1, y2:1, stop:0 rgba(20, 252, 7, 255), stop:1 rgba(25, 134, 5, 255));").arg(SIZE/2);
     redSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.145, y1:0.16, x2:0.92, y2:0.988636, stop:0 rgba(255, 12, 12, 255), stop:0.869347 rgba(103, 0, 0, 255));").arg(SIZE/2);
     orangeSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.232, y1:0.272, x2:0.98, y2:0.959773, stop:0 rgba(255, 113, 4, 255), stop:1 rgba(91, 41, 7, 255))").arg(SIZE/2);
     blueSS = QString("color: white;border-radius: %1;background-color: qlineargradient(spread:pad, x1:0.04, y1:0.0565909, x2:0.799, y2:0.795, stop:0 rgba(203, 220, 255, 255), stop:0.41206 rgba(0, 115, 255, 255), stop:1 rgba(0, 49, 109, 255));").arg(SIZE/2);
 
+
+    QFont myFont( "Arial", 15);//,QFont::Bold);
     ledConnection = new QLabel(tr("Disconnected"));
+    ledConnection->setFont(myFont);
     ledConnection->setStyleSheet(redSS);
 
     ledZalevam = new QLabel(tr(""));
-    ledZalevam->setStyleSheet(blueSS);
+    ledZalevam->setFont(myFont);
+    ledZalevam->setStyleSheet("");
+
+    ledOhrivam = new QLabel(tr(""));
+    ledOhrivam->setFont(myFont);
+    ledOhrivam->setStyleSheet("");
 
     bar->addWidget(ledConnection);
     bar->addWidget(ledZalevam);
+    bar->addWidget(ledOhrivam);
 
     this->addToolBar(bar);
 }
@@ -195,31 +394,45 @@ void MainWindow::updateToolbar(){
         ledConnection->setText(tr("Connected"));
         ledConnection->setStyleSheet(greenSS);
     }else{
-        ledConnection = new QLabel(tr("Disconnected"));
+        ledConnection->setText(tr("Disconnected"));
         ledConnection->setStyleSheet(redSS);
     }
     if(zalevam){
-
+        ledZalevam->setText(tr("Wattering"));
+        ledZalevam->setStyleSheet(blueSS);
+    }else{
+        ledZalevam->setText("");
+        ledZalevam->setStyleSheet("");
+    }
+    if(ohrivam){
+        ledOhrivam->setText(tr("Heating"));
+        ledOhrivam->setStyleSheet(orangeSS);
+    }else{
+        ledOhrivam->setText("");
+        ledOhrivam->setStyleSheet("");
     }
 }
 
 void MainWindow::setupActions(){
     // Menu
     mnuConf = new QMenu(tr("&Configure"));
-    actLoraConf = new QAction(tr("&COnfigure LoRa"));
+    this->menuBar()->addMenu(mnuConf);
+
+    actLoraConf = new QAction(tr("&Configure LoRa"));
     //mnuConf->addAction(actLoraConf);
     actLoraConnect = new QAction(tr("&Connect to LoRa"));
 
     actPotConf = new QAction(tr("&Pot config"));
-    this->menuBar()->addMenu(mnuConf);
     QIcon iconConfig = QIcon::fromTheme("document-properties",QIcon(":/icons/wrench.png"));
     actPotConf->setIcon(iconConfig);
     mnuConf->addAction(actPotConf);
 
     actSerConf = new QAction(tr("&Serial port config"));
-    this->menuBar()->addMenu(mnuConf);
     actSerConf->setIcon(iconConfig);
     mnuConf->addAction(actSerConf);
+
+    actCalibrate = new QAction(tr("&Calibrate temperature sensor"));
+    mnuConf->addAction(actCalibrate);
 
     //Tabs
     wTabs = new QTabWidget;
@@ -270,11 +483,35 @@ void MainWindow::setupActions(){
 
     connect(actPotConf,SIGNAL(triggered()),this,SLOT(confPot()));
     connect(actSerConf,SIGNAL(triggered()),this,SLOT(confSer()));
+    connect(actCalibrate,SIGNAL(triggered()),this,SLOT(calibrateTemp()));
+
 
     printSetValues();
 
     this->show();
     this->statusBar()->showMessage(tr("Ready.."),2000);
+}
+
+void MainWindow::calibrateTemp(){
+    myCalibration = new calibrate;
+    connect(myCalibration,SIGNAL(getMeas()),this,SLOT(getTemperature()));
+    myCalibration->exec();
+    if(myCalibration->saved){
+        k0 = myCalibration->getk0();
+        k1 = myCalibration->getk1();
+        calibrated = true;
+    }
+}
+
+void MainWindow::getTemperature(){
+    QList<float> data;
+    if(!getPacket("getrawtemp\n\r", &data,true)){
+        QMessageBox::critical(this,tr("Serial port error!"),tr("Device ")+portName+tr("Not responding properly!     \n")+
+                              "(getrawtemp failed)");  // what fucked up
+        qDebug()<<"getrawtemp failed";
+    }
+    qDebug()<<"Raw temperature: "<<data;
+    myCalibration->addValue(data[0]);
 }
 
 void MainWindow::printSetValues(){
@@ -1156,8 +1393,12 @@ void MainWindow::confPot(){
     myConfig->setMode(mode);
     myConfig->setHum(setHum);
     myConfig->setTemp(setTemp);
+    if(setTemp == 0){
+        keepTemp = false;
+    }else{
+        keepTemp = true;
+    }
     myConfig->setKeepTemp(keepTemp);
-    if(!keepTemp)setTemp = 0;
     myConfig->exec();
     if(myConfig->saved){
         if(myConfig->getKeepTemp() == 1){
@@ -1168,8 +1409,9 @@ void MainWindow::confPot(){
         setTemp = myConfig->getTemp();
         mode = myConfig->getMode();
         setHum = myConfig->getHum();
-        configSent = false;
+        if(!keepTemp)setTemp = 0;
         printSetValues();
+        config_saved = true;
         iot_client->sendData((uint8_t) mode, (uint8_t) setTemp,(uint8_t)setHum);
     }
 }
@@ -1187,24 +1429,29 @@ void MainWindow::confSer(){
         serial->setBaudRate(baudRate);
         serial->setPortName(portName);
         this->statusBar()->showMessage(tr("Configuration was saved."),5000);
+        serial->close();
+        setupSerial();
     }
 }
 
 bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
     auto findIt = [](auto RXLines, auto n){
         if(RXLines.size() == 0)return -1;
+        if(n > RXLines.size())n = RXLines.size();
         for(int idx = RXLines.size()-1;idx >= RXLines.size() - n; idx--){
             int left = RXLines[idx].indexOf("{");
             int right = RXLines[idx].indexOf("}");
-            if(left > 0 && right > 0){// obě závorky ve zprávě leží
+            if(left >= 0 && right > 0){// obě závorky ve zprávě leží
                 if(left < right){// levá závorka je nalevo od pravé
                     // našel jsem paket .. ukládám
                     return idx;
                 }
             }
         }
+
         return -1;
     };
+    RXLines.clear(); // vyprázdním uart buffer
     QTimer time;
     time.setInterval(1500);// timeout for dack
     time.setSingleShot(true);
@@ -1217,13 +1464,13 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
                                   QVariant::fromValue(serial->error()).toString()+"\n"+
                                   serial->errorString());  // what fucked up
         }
+        qDebug()<<"Search for "<<cmd<<"fucked up due to "<< QVariant::fromValue(serial->error()).toString()+"\n"+
+                  serial->errorString();
        return false;
     }
     // wait for dack message to be received
-    serial->waitForReadyRead(50);
     int n =  2;// prohledávám dva poslední prvky
     int idx = findIt(RXLines,n);
-    qDebug()<<idx;
     if(idx < 0){
         time.start();
         while(time.remainingTime() > 0){
@@ -1240,17 +1487,26 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
         }
 
     }
+
     // tady už mám index paketu
     // musím z něho vytáhnout data a uložit do values
     std::string packet = RXLines[idx].toStdString();
     idx = packet.find(";");// předpokládám, že paket obsahuje vždy alespoň jeden středník .. alespoň dvě čísla
+    if(idx == std::string::npos){
+        // žádný středník
+        values->append(QString::fromStdString(packet.substr(1,packet.size()-2)).toFloat());
+        qDebug()<<"request for temperature";
+        return true;
+    }
     values->append(QString::fromStdString(packet.substr(1,idx-1)).toFloat());
     int idx2 = packet.find(";",idx + 1);
     while(idx2 != std::string::npos){// dokud nallézám středníky, tak iteruj
-        values->append(QString::fromStdString(packet.substr(idx+1,idx2-1)).toFloat());
+        values->append(QString::fromStdString(packet.substr(idx+1,(idx2-1)-(idx))).toFloat());
         idx = idx2;
         idx2 = packet.find(";",idx + 1);
     }
+    idx2 = packet.find("}",idx + 1);
+    values->append(QString::fromStdString(packet.substr(idx+1,(idx2-1)-(idx))).toFloat());
     return true;
 }
 
@@ -1259,13 +1515,25 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
  * @return true if data were sent corrently, else false
  */
 bool MainWindow::sendData(QString str, QString dack,bool silent){
+    RXLines.clear();
+    if(serial->error() != QSerialPort::NoError){    // something fucked up
+        qDebug()<<"False předtím due to: "<<QVariant::fromValue(serial->error()).toString()+" "+serial->errorString();
+       return false;
+    }
     //serial->setReadBufferSize(128);
+    int n = 2;// rzpoznávej posledních n příkazů
     QTimer time;
     // Reconnection timer
-    time.setInterval(2500);// timeout for dack
+    time.setInterval(250);// timeout for dack
     time.setSingleShot(true);
     //const char *c = ba.data();
-
+    // .. asi by bylo nejlepší udělat frontu dat, která chci odesílat .. to už ale nestíhám
+    time.start();
+    while(time.remainingTime() > 0){
+        QCoreApplication::processEvents();
+        readData();
+    }
+    time.stop();
     serial->write(str.toLocal8Bit());
     serial->waitForBytesWritten(50*str.size());     // wait for data to be sent
     if(serial->error() != QSerialPort::NoError){    // something fucked up
@@ -1274,11 +1542,20 @@ bool MainWindow::sendData(QString str, QString dack,bool silent){
                                   QVariant::fromValue(serial->error()).toString()+"\n"+
                                   serial->errorString());  // what fucked up
         }
+        qDebug()<<"False due to: "<<QVariant::fromValue(serial->error()).toString()+" "+serial->errorString();
        return false;
     }
     // wait for dack message to be received
-    serial->waitForReadyRead(50);
-    if(RXLines.size() - RXLines.lastIndexOf(dack) <= 2 ){
+    time.setInterval(50);
+    time.start();
+    while(time.remainingTime() > 0){
+        QCoreApplication::processEvents();
+        readData();
+    }
+    time.stop();
+    time.setInterval(1000);
+    //serial->waitForReadyRead(50);
+    if(RXLines.size() > 0 && RXLines.lastIndexOf(dack) >= 0 && (RXLines.size() - RXLines.lastIndexOf(dack) <= n )){
         //prvek je na 2. pořadí od konce nebo méně
         return true;
     }else{
@@ -1287,7 +1564,7 @@ bool MainWindow::sendData(QString str, QString dack,bool silent){
             QCoreApplication::processEvents();
             readData();
             // check jestli na posledních několika zprávách není hledaná dack
-            if(RXLines.size() - RXLines.lastIndexOf(dack) <= 2 ){
+            if(RXLines.size() > 0 && RXLines.lastIndexOf(dack) >= 0 && RXLines.size() - RXLines.lastIndexOf(dack) <= n ){
                 //prvek je na 2. pořadí od konce nebo méně
                 return true;
             }
@@ -1369,8 +1646,8 @@ void MainWindow::loraConnected(){
  * data: {t,h,light,soil,cup,rez};
  */
 void MainWindow::loraReceivedData(QList<int> data){
-    qDebug()<<"Data printed!!";
-    this->statusBar()->showMessage(tr("Received data from device!"),2000);
+    qDebug()<<"LoRa data printed!!";
+    this->statusBar()->showMessage(tr("LoRa received data from device!"),2000);
     printStats(data[0],data[1],data[2],data[3],data[4],data[5]);
     printTemp(data[0]);
     printHum(data[1]);
@@ -1387,7 +1664,7 @@ void MainWindow::loraReceivedData(QList<int> data){
           (data[8] != (uint8_t)setHum)){
             this->statusBar()->showMessage(tr("Overwriting the data inside device!"),2);
             iot_client->sendData((uint8_t) mode, (uint8_t) setTemp,(uint8_t)setHum);
-            qDebug()<<"Set data sent!";
+            qDebug()<<"LoRa data sent!";
         }
     }
     /*    bool keepTemp;
@@ -1395,7 +1672,7 @@ void MainWindow::loraReceivedData(QList<int> data){
     qreal setHum;
     int mode;*/
 
-    qDebug()<<data;
+    //qDebug()<<data;
 }
 
 void MainWindow::test(){
@@ -1500,7 +1777,7 @@ void MainWindow::printStats(qreal temp, qreal hum, qreal light, qreal soil, qrea
     lblStatsRezValue->setText(QString::number(rez)+="%");
     */
     progStatsWatterCup->setValue(std::round(cup));
-    lblStatsWatterCupValue->setText(QString::number(rez)+="%");
+    lblStatsWatterCupValue->setText(QString::number(cup)+="%");
     progStatsWatterRez->setValue(std::round(rez));
     lblStatsWatterRezValue->setText(QString::number(rez)+="%");
 }

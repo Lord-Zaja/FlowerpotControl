@@ -8,6 +8,7 @@
 class mqtt_client;
 class Chart;
 class configPot;
+class calibrate;
 
 class QChartView;
 class QLabel;
@@ -258,14 +259,29 @@ class MainWindow : public QMainWindow
     QAction *actSerConf;
     QAction *actLoraConf;
     QAction *actLoraConnect;
+    QAction *actCalibrate;
 
     // Config
+    bool config_saved;
     bool keepTemp;
     qreal setTemp;
     qreal setHum;
     int mode;
     bool zalevam;
     bool ohrivam;
+
+    //Kalibrace
+    calibrate *myCalibration;
+    bool calibrated;
+    float k0,k1;
+
+    // Measured properties
+    float temperature;
+    float humidity;
+    int watter_cup;
+    int watter_rez;
+    float soil1;
+    float soil2;
 
     //Serial port
     QString RXBuffer;
@@ -276,7 +292,7 @@ class MainWindow : public QMainWindow
     int baudRate;
     QString portName;
     bool sendData(QString str, QString dack, bool silent = false);
-    bool getPacket(QString cmd, QList<float> *values, bool silent = true);
+    bool getPacket(QString cmd, QList<float> *values, bool silent = false);
     QTimer *timerSerialReconnection;
     bool configSent;
 
@@ -295,7 +311,6 @@ class MainWindow : public QMainWindow
     QString orangeSS;
     QString redSS;
     QString greenSS;
-
 
     QAction *actSerialConf;
     QAction *actSerialConnect;
@@ -332,6 +347,10 @@ public:
 public slots:
     void confPot();
     void confSer();
+    void calibrateTemp();
+
+    //Calibration slot
+    void getTemperature();
     //serial port
     void serialReconnect();
     void readData();
