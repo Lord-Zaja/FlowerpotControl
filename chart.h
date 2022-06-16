@@ -6,6 +6,8 @@
 
 QT_BEGIN_NAMESPACE
 class QSplineSeries;
+class QLineSeries;
+class QScatterSeries;
 class QValueAxis;
 QT_END_NAMESPACE
 
@@ -39,7 +41,8 @@ private:
     qreal range_x;  // hodnota, s jakou hledím v ose x do minulosti
     QList<qreal> range_y;   // rozsah zobrazovaných hodnot v y ose <od;do>
     QTimer *m_timer;
-    QSplineSeries *m_series;
+    //QSplineSeries *m_series;
+    QLineSeries *m_series;
     QStringList m_titles;
     QValueAxis *m_axisX;
     QValueAxis *m_axisY;

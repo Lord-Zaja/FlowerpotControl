@@ -1,6 +1,7 @@
 #include "chart.h"
 #include <QtCharts/QAbstractAxis>
 #include <QtCharts/QSplineSeries>
+#include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 #include <QtCore/QRandomGenerator>
 #include <QtCore/QDebug>
@@ -208,7 +209,8 @@ void Chart::chartSetup(){
     //connect(m_timer, SIGNAL(timeout()), this, SLOT(handleTimeout()));
     //m_timer->setInterval(1000);
 
-    m_series = new QSplineSeries(this);
+    //m_series = new QSplineSeries(this);
+    m_series = new QLineSeries(this);
     QPen green(Qt::red);
     green.setWidth(3);
     m_series->setPen(green);

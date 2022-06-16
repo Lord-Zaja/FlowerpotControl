@@ -60,25 +60,29 @@ MainWindow::MainWindow(QWidget *parent)
 {
     //testSerial();
 
-    setupForm();
-    setupTabs();
-    setupActions();
-    setupMQTT();
+    setupForm();// nastavení hlavního okna
+    setupTabs();// sestavení hlavních karet
+    setupActions();// nastavení akcí
+    setupMQTT();//nastavení MQTT brokera
     serial = new QSerialPort();
     timerSerialReconnection = new QTimer;
-    timerSerialReconnection->setInterval(10000);
+    timerSerialReconnection->setInterval(20000);
     setupSerial();
 
 
     //Testovací náhodná data pro loru
     distribution = std::normal_distribution<double>(5.0,5.0);
     timerTest = new QTimer;
-    timerTest->setInterval(20000);
+    timerTest->setInterval(10000);
     connect(timerTest, SIGNAL(timeout()), this, SLOT(test()));
     timerTest->start();
-
 }
 
+/*
+ * \brief Slot volaný při přůjmu dat sériovou linkou.
+ *        Funkce ukládá přijámaná data do bufferu, z kterého poté data rozdělí na
+ *        řádky a uloží do seznamu RXLines. Při přetečení přepisuje nejstarší data.
+ */
 void MainWindow::readData(){
     const QByteArray data = serial->readAll();
     if(data.isEmpty())return;
@@ -94,18 +98,11 @@ void MainWindow::readData(){
     }
     qDebug()<<RXLines;
     qDebug()<<"";
-/*
-    if(idx < 0){//pořád čekám na enter
-        return;
-    }*/
-    // už mám řádek, vezmu řádek bez enteru
-    /*
-    qDebug()<<"Buffer: "<<RXBuffer;
-    RXLine = RXBuffer.left(idx);
-    qDebug()<<"Line: "<<RXLine<<"\n";
-    RXBuffer = "";*/
 }
 
+/*
+ * \brief Nastavení sériové linky
+ */
 void MainWindow::setupSerial(){
     serial->setBaudRate(baudRate);
     serial->setPortName(portName);
@@ -125,19 +122,15 @@ void MainWindow::setupSerial(){
         return;
     }
 
-
-
     serialConnected = true;
     serialReconnect();
 
-    /*
-    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
-    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
-    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);
-    qDebug()<<"Connected? "<<sendData("getconnection\n\r","connected",true);*/
     timerSerialReconnection->start();
 }
 
+/*
+ * \brief Slot volaný při aktualizaci dat s květináčem přes sériovou linku
+ */
 void MainWindow::serialReconnect(){
     qDebug()<<"Serial reconnection..";
     bool silent = true;
@@ -348,12 +341,12 @@ void MainWindow::serialReconnect(){
         }
         calibrated = false;
     }
-    //qDebug()<<configValues;
-    //qDebug()<<serialConnected;
     updateToolbar();
 }
 
-
+/*
+ * \brief Nastavení hlavního okna
+ */
 void MainWindow::setupForm(){
     this->setWindowTitle(tr("Flowerpot Control"));
     QIcon iconWindow = QIcon(":/icons/pot.png");
@@ -389,6 +382,9 @@ void MainWindow::setupForm(){
     this->addToolBar(bar);
 }
 
+/*
+ * \brief Aktualizace toolbaru
+ */
 void MainWindow::updateToolbar(){
     if(serialConnected){
         ledConnection->setText(tr("Connected"));
@@ -413,6 +409,9 @@ void MainWindow::updateToolbar(){
     }
 }
 
+/*
+ * \brief Sestavení akcí, hlavních karet
+ */
 void MainWindow::setupActions(){
     // Menu
     mnuConf = new QMenu(tr("&Configure"));
@@ -446,45 +445,11 @@ void MainWindow::setupActions(){
     wTabs->addTab(wRez,tr("&Rez. watter"));
     wTabs->addTab(wTest,tr("&Test rand data"));
 
-    //areaMain = new QScrollArea;
-    //areaMain->setWidget(widgetMain);
     this->setCentralWidget(wTabs);
-
-
-    //printTemp(25);
-    //printLight(50);
-    //printLight(75);
-/*
-    chartLight->addPoint(0.5,0.5);
-    chartLight->addPoint(0.75,0.5);
-    chartLight->addPoint(1,1);
-    chartLight->addPoint(1.25,1.5);
-    chartLight->addPoint(1.5,0.7);*/
-
-    /*
-    testChart = new Chart;
-    testChart->setTitle(tr("Test chart"));
-    testChart->legend()->hide();
-    testChart->setAnimationOptions(QChart::AllAnimations);
-    testChartView = new QChartView(testChart);
-    testChartView->setRenderHint(QPainter::Antialiasing);
-    this->setCentralWidget(testChartView);
-    this->resize(400, 300);
-
-    // body mi mělí jít v x ose za sebou .. spline se napojuje bod za bodem .. podle toho jak jsou přidány
-    // možná by to šlo opravit funkcí resetSeries .. kde by se series vynulovala .. počkalo by se
-    // kvůli tomu, aby se graf sám aktualizoval a pak by se tam vše znovu zapsalo
-    testChart->addPoint(0.5,0.5);
-    testChart->addPoint(0.75,0.5);
-    testChart->addPoint(1,1);
-    testChart->addPoint(1.25,1.5);
-    //testChart->addPoint(0.7,0.7);
-*/
 
     connect(actPotConf,SIGNAL(triggered()),this,SLOT(confPot()));
     connect(actSerConf,SIGNAL(triggered()),this,SLOT(confSer()));
     connect(actCalibrate,SIGNAL(triggered()),this,SLOT(calibrateTemp()));
-
 
     printSetValues();
 
@@ -492,6 +457,9 @@ void MainWindow::setupActions(){
     this->statusBar()->showMessage(tr("Ready.."),2000);
 }
 
+/*
+ * \brief Nabídka pro kalibraci teplotního čidla
+ */
 void MainWindow::calibrateTemp(){
     myCalibration = new calibrate;
     connect(myCalibration,SIGNAL(getMeas()),this,SLOT(getTemperature()));
@@ -503,6 +471,9 @@ void MainWindow::calibrateTemp(){
     }
 }
 
+/*
+ * \brief Vytáhnutí aktuální surové (nepřepočítané) teploty z teplotního čidla
+ */
 void MainWindow::getTemperature(){
     QList<float> data;
     if(!getPacket("getrawtemp\n\r", &data,true)){
@@ -514,6 +485,9 @@ void MainWindow::getTemperature(){
     myCalibration->addValue(data[0]);
 }
 
+/*
+ * \brief Vykreslení nastavených hodnot
+ */
 void MainWindow::printSetValues(){
     QPalette palTemp;
     QPalette palHum;
@@ -540,6 +514,9 @@ void MainWindow::printSetValues(){
 
 }
 
+/*
+ * \brief Sestavení hlavních karet
+ */
 void MainWindow::setupTabs(){
     QPalette pal;
     QString styleFont;
@@ -1304,6 +1281,9 @@ void MainWindow::setupTabs(){
     connect(editTestDiv,SIGNAL(textChanged(QString)),this,SLOT(testDivChanged()));
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu teploty přes QLineEdit
+ */
 void MainWindow::tempDivChanged(){
     bool ok;
     if(!editTempDiv->text().isEmpty()){
@@ -1316,6 +1296,9 @@ void MainWindow::tempDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu Vlhkosti vzduchu přes QLineEdit
+ */
 void MainWindow::humDivChanged(){
     bool ok;
     if(!editHumDiv->text().isEmpty()){
@@ -1328,6 +1311,9 @@ void MainWindow::humDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu osvětlení přes QLineEdit
+ */
 void MainWindow::lightDivChanged(){
     bool ok;
     if(!editLightDiv->text().isEmpty()){
@@ -1340,6 +1326,9 @@ void MainWindow::lightDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu vlhkosti půdy přes QLineEdit
+ */
 void MainWindow::soilDivChanged(){
     bool ok;
     if(!editSoilDiv->text().isEmpty()){
@@ -1352,6 +1341,9 @@ void MainWindow::soilDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu výšky hladiny v misce přes QLineEdit
+ */
 void MainWindow::cupDivChanged(){
     bool ok;
     if(!editCupDiv->text().isEmpty()){
@@ -1364,6 +1356,9 @@ void MainWindow::cupDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy grafu výšky hladiny v rezervoáru přes QLineEdit
+ */
 void MainWindow::rezDivChanged(){
     bool ok;
     if(!editRezDiv->text().isEmpty()){
@@ -1376,6 +1371,9 @@ void MainWindow::rezDivChanged(){
     }
 }
 
+/*
+ * \brief Slot volaný při změně velikosti osy testovacího grafu přes QLineEdit
+ */
 void MainWindow::testDivChanged(){
     bool ok;
     if(!editTestDiv->text().isEmpty()){
@@ -1388,6 +1386,9 @@ void MainWindow::testDivChanged(){
     }
 }
 
+/*
+ * \brief Nabídka pro nastavení květináče.
+ */
 void MainWindow::confPot(){
     configPot *myConfig = new configPot;
     myConfig->setMode(mode);
@@ -1416,6 +1417,9 @@ void MainWindow::confPot(){
     }
 }
 
+/*
+ * \brief Nabídka pro nastavení sériového portu
+ */
 void MainWindow::confSer(){
     confSerial *myConfig = new confSerial;
     if(baudRate > 0){
@@ -1434,6 +1438,13 @@ void MainWindow::confSer(){
     }
 }
 
+/*
+ * \brief Funkce pro přijmutí paketu příkazem cmd
+ * @param cmd - příkaz vyvolávající paket
+ * @param values - list, do kterého se zapíše obsah paketu
+ * @param silent - true => funkce nehlásí uživatelovi chyby
+ * @return - true, pokud vše proběhlo v pořádku, jinak false
+ */
 bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
     auto findIt = [](auto RXLines, auto n){
         if(RXLines.size() == 0)return -1;
@@ -1453,9 +1464,15 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
     };
     RXLines.clear(); // vyprázdním uart buffer
     QTimer time;
-    time.setInterval(1500);// timeout for dack
+    time.setInterval(250);// timeout for dack
     time.setSingleShot(true);
-
+    time.start();
+    while(time.remainingTime() > 0){
+        QCoreApplication::processEvents();
+        readData();
+    }
+    time.stop();
+    time.setInterval(1500);// timeout for dack
     serial->write(cmd.toLocal8Bit());
     serial->waitForBytesWritten(50*cmd.size());     // wait for data to be sent
     if(serial->error() != QSerialPort::NoError){    // something fucked up
@@ -1481,7 +1498,7 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
         }
         if(idx < 0){
             if(!silent){
-                QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by Flowerpot! (timeout)"));  // what fucked up
+                QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledged by Flowerpot! (timeout)"));  // what fucked up
             }
             return false;
         }
@@ -1510,9 +1527,11 @@ bool MainWindow::getPacket(QString cmd, QList<float> *values, bool silent){
     return true;
 }
 
-/* \brief Ftunction to write data to serial port.
- * @param string of data
- * @return true if data were sent corrently, else false
+/* \brief Funkce pro posílání dat přes sériový port
+ * @param str - posílaná zpráva
+ * @param dack - zpráva potvrzující přijetí zprávy
+ * @param silent - hlášení chyb uživatelovi
+ * @return true pokud data byla poslána v pořádku, else false
  */
 bool MainWindow::sendData(QString str, QString dack,bool silent){
     RXLines.clear();
@@ -1520,7 +1539,6 @@ bool MainWindow::sendData(QString str, QString dack,bool silent){
         qDebug()<<"False předtím due to: "<<QVariant::fromValue(serial->error()).toString()+" "+serial->errorString();
        return false;
     }
-    //serial->setReadBufferSize(128);
     int n = 2;// rzpoznávej posledních n příkazů
     QTimer time;
     // Reconnection timer
@@ -1554,7 +1572,6 @@ bool MainWindow::sendData(QString str, QString dack,bool silent){
     }
     time.stop();
     time.setInterval(1000);
-    //serial->waitForReadyRead(50);
     if(RXLines.size() > 0 && RXLines.lastIndexOf(dack) >= 0 && (RXLines.size() - RXLines.lastIndexOf(dack) <= n )){
         //prvek je na 2. pořadí od konce nebo méně
         return true;
@@ -1574,30 +1591,11 @@ bool MainWindow::sendData(QString str, QString dack,bool silent){
         QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by Flowerpot! (timeout)"));  // what fucked up
     }
     return false;
-
-
-/*
-    if(!serial->waitForReadyRead(2000)){
-        // timeout
-        QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by display! (timeout)"));  // what fucked up
-        return true; // data were still sent
-    }
-    qDebug()<<"Bytes wainting: " << serial->bytesAvailable();
-    QString rx;
-    while(!serial->atEnd()){
-        QByteArray data = serial->read(128);
-        rx += QString::fromStdString(data.toStdString());
-    }
-    //QByteArray ba = serial->readLine(128);
-    //rx = QString::fromStdString(ba.toStdString());
-    qDebug()<<rx;
-    if(rx != dack){
-        // not received dack signal
-        QMessageBox::warning(this,tr("Serial port warning"),tr("Data not acknowledge by display! (dack not received)"));  // what fucked up
-        return true; // data were still sent
-    }*/
 }
 
+/*
+ * \brief Funkce pro nastavení MQTT brokera
+ */
 void MainWindow::setupMQTT(){
     int rc;
     char client_id[] = "flowerpot-arduino@ttn";
@@ -1624,6 +1622,9 @@ void MainWindow::setupMQTT(){
     timerReconnection->start(); // reconnect every interval until connected
 }
 
+/*
+ * \brief LoRa slot volaný při odpojení od brokera
+ */
 void MainWindow::loraDisconnected(){
     this->statusBar()->showMessage(tr("Server disconnected!"),10000);
     iot_client->reconnect();
@@ -1632,6 +1633,9 @@ void MainWindow::loraDisconnected(){
     }
 }
 
+/*
+ * \brief LoRa slot volaný při připojení brokera
+ */
 void MainWindow::loraConnected(){
     this->statusBar()->showMessage(tr("Connected to server!"),10000);
     if(timerReconnection->isActive()){
@@ -1642,8 +1646,8 @@ void MainWindow::loraConnected(){
 }
 
 /*
- * Grabs received and translated data packet and prints it
- * data: {t,h,light,soil,cup,rez};
+ * \brief Grabs received and translated data packet and prints it
+ * @param data: {t,h,light,soil,cup,rez};
  */
 void MainWindow::loraReceivedData(QList<int> data){
     qDebug()<<"LoRa data printed!!";
@@ -1675,6 +1679,9 @@ void MainWindow::loraReceivedData(QList<int> data){
     //qDebug()<<data;
 }
 
+/*
+ * \brief Testovací funkce
+ */
 void MainWindow::test(){
     qreal data = distribution(this->generator);
     uint16_t c = std::round(data);
@@ -1696,6 +1703,9 @@ void MainWindow::test(){
     printTest(data);
 }
 
+/*
+ * \brief Vložení teploty do daného grafu
+ */
 void MainWindow::printTemp(qreal value){
     lblTempValue->setText(QString::number(value)+="°C");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1704,6 +1714,9 @@ void MainWindow::printTemp(qreal value){
     chartTemp->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení vlhkosti vzduchu do daného grafu
+ */
 void MainWindow::printHum(qreal value){
     lblHumValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1716,6 +1729,9 @@ void MainWindow::printHum(qreal value){
     chartHum->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení intenzity osvětlení do daného grafu
+ */
 void MainWindow::printLight(qreal value){
     lblLightValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1724,6 +1740,9 @@ void MainWindow::printLight(qreal value){
     chartLight->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení vlhkosti půdy do daného grafu
+ */
 void MainWindow::printSoil(qreal value){
     lblSoilValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1732,6 +1751,9 @@ void MainWindow::printSoil(qreal value){
     chartSoil->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení výšky hladiny v misce do daného grafu
+ */
 void MainWindow::printCup(qreal value){
     lblCupValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1740,6 +1762,9 @@ void MainWindow::printCup(qreal value){
     chartCup->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení výšky hladiny v rezervoáru do daného grafu
+ */
 void MainWindow::printRez(qreal value){
     lblRezValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1748,6 +1773,9 @@ void MainWindow::printRez(qreal value){
     chartRez->addPoint(time,value);
 }
 
+/*
+ * \brief Vložení testovacích hodnot do daného grafu
+ */
 void MainWindow::printTest(qreal value){
     lblTestValue->setText(QString::number(value)+="%");
     qreal time = QDateTime::currentDateTime().time().hour();    // čas musí být v hodinách
@@ -1757,7 +1785,7 @@ void MainWindow::printTest(qreal value){
 }
 
 /*
- * Vykreslení dat v Tabu stats
+ * \brief Vykreslení dat v Tabu stats
  */
 void MainWindow::printStats(qreal temp, qreal hum, qreal light, qreal soil, qreal cup, qreal rez){
     // Dials and current values
@@ -1769,13 +1797,6 @@ void MainWindow::printStats(qreal temp, qreal hum, qreal light, qreal soil, qrea
     lblStatsLightValue->setText(QString::number(light)+="%");
     viewDialSoil->rootObject()->setProperty("value",soil);
     lblStatsSoilValue->setText(QString::number(soil)+="%");
-
-    /*
-    viewDialCup->rootObject()->setProperty("value",cup);
-    lblStatsCupValue->setText(QString::number(cup)+="%");
-    viewDialRez->rootObject()->setProperty("value",rez);
-    lblStatsRezValue->setText(QString::number(rez)+="%");
-    */
     progStatsWatterCup->setValue(std::round(cup));
     lblStatsWatterCupValue->setText(QString::number(cup)+="%");
     progStatsWatterRez->setValue(std::round(rez));
@@ -1833,12 +1854,6 @@ void MainWindow::test(){
     mosqpp::lib_cleanup();
 }
 */
-
-
-
-
-
-
 
 MainWindow::~MainWindow()
 {
